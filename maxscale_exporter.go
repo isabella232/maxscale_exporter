@@ -22,6 +22,25 @@ const (
 	namespace   = "maxscale"
 )
 
+func init() {
+	threadMetrics.Reads = newThreadDesc("reads", "Number of read events", prometheus.CounterValue)
+	threadMetrics.Writes = newThreadDesc("writes", "Number of write events", prometheus.CounterValue)
+	threadMetrics.Errors = newThreadDesc("errors", "Number of error events", prometheus.CounterValue)
+	threadMetrics.Hangups = newThreadDesc("hangups", "Number of hangup events", prometheus.CounterValue)
+	threadMetrics.Accepts = newThreadDesc("accepts", "Number of accept events", prometheus.CounterValue)
+
+	allThreadMetricsDesc = []*Metric{threadMetrics.Reads, threadMetrics.Writes, threadMetrics.Errors,
+		threadMetrics.Hangups, threadMetrics.Accepts}
+}
+
+type threadMetricsT struct {
+	Reads   *Metric
+	Writes  *Metric
+	Errors  *Metric
+	Hangups *Metric
+	Accepts *Metric
+}
+
 type MaxScale struct {
 	Address   string
 	username  string
@@ -35,49 +54,6 @@ type MaxScale struct {
 	statusMetrics   map[string]Metric
 	variableMetrics map[string]Metric
 	eventMetrics    map[string]Metric
-}
-
-type ServersData struct {
-	Data []ServerData
-}
-
-type ServerData struct {
-	ID         string `json:"id"`
-	Attributes ServerAttributes
-}
-
-type ServerAttributes struct {
-	State      string
-	Parameters ServerParameters
-	Statistics ServerStatistics
-}
-
-type ServerParameters struct {
-	Address string
-	Port    int
-}
-
-type ServerStatistics struct {
-	Connections float64
-}
-
-type ServicesData struct {
-	Data []ServiceData
-}
-
-type ServiceData struct {
-	ID         string `json:"id"`
-	Attributes ServiceAttributes
-}
-
-type ServiceAttributes struct {
-	Router     string
-	Statistics ServiceStatistics
-}
-
-type ServiceStatistics struct {
-	Connections      float64
-	TotalConnections float64 `json:"total_connections"`
 }
 
 type Status struct {
@@ -105,12 +81,22 @@ var (
 	serverLabelNames    = []string{"server", "address"}
 	serverUpLabelNames  = []string{"server", "address", "status"}
 	serviceLabelNames   = []string{"name", "router"}
+	threadLabelNames    = []string{"id"}
 	statusLabelNames    = []string{}
 	variablesLabelNames = []string{}
 	eventLabelNames     = []string{}
+
+	threadMetrics        threadMetricsT
+	allThreadMetricsDesc []*Metric
 )
 
 type metrics map[string]Metric
+
+func newThreadDesc(name string, help string, t prometheus.ValueType) *Metric {
+	fqName := prometheus.BuildFQName(namespace, "thread", name)
+	desc := prometheus.NewDesc(fqName, help, threadLabelNames, nil)
+	return &Metric{desc, t}
+}
 
 func newDesc(subsystem string, name string, help string, variableLabels []string, t prometheus.ValueType) Metric {
 	return Metric{
@@ -217,6 +203,10 @@ func (m *MaxScale) Describe(ch chan<- *prometheus.Desc) {
 		ch <- m.Desc
 	}
 
+	for _, md := range allThreadMetricsDesc {
+		ch <- md.Desc
+	}
+
 	ch <- m.up.Desc()
 	ch <- m.totalScrapes.Desc()
 }
@@ -233,6 +223,15 @@ func (m *MaxScale) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	if err := m.parseServices(ch); err != nil {
+		parseErrors = true
+		log.Print(err)
+	}
+
+	if res, err := m.parseThreads(); err == nil {
+		for _, e := range res {
+			ch <- e
+		}
+	} else {
 		parseErrors = true
 		log.Print(err)
 	}
@@ -351,6 +350,32 @@ func (m *MaxScale) parseServices(ch chan<- prometheus.Metric) error {
 	}
 
 	return nil
+}
+
+func (m *MaxScale) parseThreads() ([]prometheus.Metric, error) {
+	var threads ThreadsData
+	err := m.getStatistics("maxscale/threads", &threads)
+
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]prometheus.Metric, 0, 100)
+	addMetric := func(metricDesc *Metric, value float64, id string) {
+		newMetric := prometheus.MustNewConstMetric(metricDesc.Desc, metricDesc.ValueType, value, id)
+		results = append(results, newMetric)
+	}
+
+	for _, element := range threads.Data {
+		id := element.ID
+		stats := &element.Attributes.Stats
+		addMetric(threadMetrics.Reads, stats.Reads, id)
+		addMetric(threadMetrics.Writes, stats.Writes, id)
+		addMetric(threadMetrics.Errors, stats.Errors, id)
+		addMetric(threadMetrics.Hangups, stats.Hangups, id)
+		addMetric(threadMetrics.Accepts, stats.Accepts, id)
+	}
+	return results, nil
 }
 
 func (m *MaxScale) parseStatus(ch chan<- prometheus.Metric) error {
