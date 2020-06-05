@@ -22,15 +22,12 @@ const (
 	namespace   = "maxscale"
 )
 
-// Flags for CLI invocation
-var (
-	address *string
-	port    *string
-	pidfile *string
-)
-
 type MaxScale struct {
-	Address         string
+	Address   string
+	username  string
+	password  string
+	queryBase string
+
 	up              prometheus.Gauge
 	totalScrapes    prometheus.Counter
 	serverMetrics   map[string]Metric
@@ -144,9 +141,13 @@ var (
 	}
 )
 
-func NewExporter(address string) (*MaxScale, error) {
+func NewExporter(address string, username string, password string) (*MaxScale, error) {
 	return &MaxScale{
-		Address: address,
+		Address:   address,
+		username:  username,
+		password:  password,
+		queryBase: "http://" + username + ":" + password + "@" + address + "/v1/",
+
 		up: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "up",
@@ -234,19 +235,24 @@ func (m *MaxScale) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (m *MaxScale) getStatistics(path string, v interface{}) error {
-	resp, err := http.Get("http://" + m.Address + path)
+	query := m.queryBase + path
 
+	resp, err := http.Get(query)
 	if err != nil {
-		return fmt.Errorf("Error while getting %v: %v\n", path, err)
+		return fmt.Errorf("Error while getting %v: %v", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Status error: %v", resp.StatusCode)
 	}
 
 	jsonDataFromHttp, err := ioutil.ReadAll(resp.Body)
-	data := bytes.Replace(jsonDataFromHttp, []byte("NULL"), []byte("null"), -1)
-
 	if err != nil {
-		return fmt.Errorf("Error while reading response from %v: %v\n", path, err)
+		return fmt.Errorf("Error while reading response from %v: %v", path, err)
 	}
 
+	data := bytes.Replace(jsonDataFromHttp, []byte("NULL"), []byte("null"), -1)
 	return json.Unmarshal(data, v)
 }
 
@@ -512,36 +518,38 @@ func (m *MaxScale) parseEvents(ch chan<- prometheus.Metric) error {
 	return nil
 }
 
-// strflag is like flag.String, with value overridden by an environment
-// variable (when present). e.g. with address, the env var used as default
-// is MAXSCALE_EXPORTER_ADDRESS, if present in env.
-func strflag(name string, value string, usage string) *string {
-	if v, ok := os.LookupEnv(envPrefix + strings.ToUpper(name)); ok {
-		return flag.String(name, v, usage)
+// stringEnvVar is like flag.StringVar, with default value overridden by an environment
+// variable when present. E.g. with address, the env var used
+// is MAXSCALE_EXPORTER_ADDRESS.
+func stringEnvVar(output *string, name string, defaultVal string, usage string) {
+	if envVal, ok := os.LookupEnv(envPrefix + strings.ToUpper(name)); ok {
+		flag.StringVar(output, name, envVal, usage)
 	}
-	return flag.String(name, value, usage)
+	flag.StringVar(output, name, defaultVal, usage)
 }
 
 func main() {
 	log.SetFlags(0)
 
-	address = strflag("address", "127.0.0.1:8003", "address to get maxscale statistics from")
-	port = strflag("port", "9195", "the port that the maxscale exporter listens on")
-	pidfile = strflag("pidfile", "", "the pid file for maxscale to monitor process statistics")
+	var address, restUser, restPassword, listenPort, pidfile string
+	stringEnvVar(&address, "address", "127.0.0.1:8989", "address:port of MaxScale REST API")
+	stringEnvVar(&listenPort, "port", "9195", "the port that the maxscale exporter listens on")
+	stringEnvVar(&pidfile, "pidfile", "", "the pid file for maxscale to monitor process statistics")
+	stringEnvVar(&restUser, "restuser", "admin", "MaxScale REST-api username")
+	stringEnvVar(&restPassword, "restpw", "mariadb", "MaxScale REST-api password")
 	flag.Parse()
 
-	log.Print("Starting MaxScale exporter")
-	log.Printf("Scraping MaxScale JSON API at: %v", *address)
-	exporter, err := NewExporter(*address)
+	log.Printf("Starting MaxScale exporter, scraping MaxScale REST API at: %v", address)
+	exporter, err := NewExporter(address, restUser, restPassword)
 	if err != nil {
 		log.Fatalf("Failed to start maxscale exporter: %v\n", err)
 	}
 
-	if *pidfile != "" {
-		log.Printf("Parsing PID file located at %v", *pidfile)
+	if pidfile != "" {
+		log.Printf("Parsing PID file located at %v", pidfile)
 		procExporter := prometheus.NewProcessCollectorPIDFn(
 			func() (int, error) {
-				content, err := ioutil.ReadFile(*pidfile)
+				content, err := ioutil.ReadFile(pidfile)
 				if err != nil {
 					log.Printf("Can't read PID file: %s", err)
 					return 0, fmt.Errorf("Can't read pid file: %s", err)
@@ -559,14 +567,17 @@ func main() {
 	prometheus.MustRegister(exporter)
 	http.Handle(metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>
-			<head><title>MaxScale Exporter</title></head>
-			<body>
-			<h1>MaxScale Exporter</h1>
-			<p><a href="` + metricsPath + `">Metrics</a></p>
-			</body>
-			</html>`))
+		w.Write([]byte(
+			`<!DOCTYPE html>
+<html>
+<head><title>MaxScale Exporter</title></head>
+<body>
+<h1>MaxScale Exporter</h1>
+<p><a href="` + metricsPath + `">Metrics</a></p>
+</body>
+</html>`))
 	})
-	log.Printf("Started MaxScale exporter, listening on port: %v", *port)
-	log.Fatal(http.ListenAndServe(":"+*port, nil))
+	log.Printf("Started MaxScale exporter, listening on port: %v", listenPort)
+	log.Fatal(http.ListenAndServe(":"+listenPort, nil))
+
 }
