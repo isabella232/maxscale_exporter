@@ -37,12 +37,28 @@ type MaxScale struct {
 	eventMetrics    map[string]Metric
 }
 
-type Server struct {
-	Server      string
-	Address     string
-	Port        int
+type ServersData struct {
+	Data []ServerData
+}
+
+type ServerData struct {
+	Attributes ServerAttributes
+}
+
+type ServerAttributes struct {
+	Name       string
+	State      string
+	Parameters ServerParameters
+	Statistics ServerStatistics
+}
+
+type ServerParameters struct {
+	Address string
+	Port    int
+}
+
+type ServerStatistics struct {
 	Connections float64
-	Status      string
 }
 
 type Service struct {
@@ -199,31 +215,30 @@ func (m *MaxScale) Collect(ch chan<- prometheus.Metric) {
 	m.totalScrapes.Inc()
 
 	var parseErrors = false
-
 	if err := m.parseServers(ch); err != nil {
 		parseErrors = true
 		log.Print(err)
 	}
 
-	if err := m.parseServices(ch); err != nil {
-		parseErrors = true
-		log.Print(err)
-	}
-
-	if err := m.parseStatus(ch); err != nil {
-		parseErrors = true
-		log.Print(err)
-	}
-
-	if err := m.parseVariables(ch); err != nil {
-		parseErrors = true
-		log.Print(err)
-	}
-
-	if err := m.parseEvents(ch); err != nil {
-		parseErrors = true
-		log.Print(err)
-	}
+	// if err := m.parseServices(ch); err != nil {
+	// 	parseErrors = true
+	// 	log.Print(err)
+	// }
+	//
+	// if err := m.parseStatus(ch); err != nil {
+	// 	parseErrors = true
+	// 	log.Print(err)
+	// }
+	//
+	// if err := m.parseVariables(ch); err != nil {
+	// 	parseErrors = true
+	// 	log.Print(err)
+	// }
+	//
+	// if err := m.parseEvents(ch); err != nil {
+	// 	parseErrors = true
+	// 	log.Print(err)
+	// }
 
 	if parseErrors {
 		m.up.Set(0)
@@ -267,32 +282,32 @@ func serverUp(status string) float64 {
 }
 
 func (m *MaxScale) parseServers(ch chan<- prometheus.Metric) error {
-	var servers []Server
-	err := m.getStatistics("/servers", &servers)
+	var servers ServersData
+	err := m.getStatistics("servers", &servers)
 
 	if err != nil {
 		return err
 	}
 
-	for _, server := range servers {
+	for _, serverdata := range servers.Data {
 		connectionsMetric := m.serverMetrics["server_connections"]
 		ch <- prometheus.MustNewConstMetric(
 			connectionsMetric.Desc,
 			connectionsMetric.ValueType,
-			server.Connections,
-			server.Server, server.Address,
+			serverdata.Attributes.Statistics.Connections,
+			serverdata.Attributes.Name, serverdata.Attributes.Parameters.Address,
 		)
 
 		// We surround the separated list with the separator as well. This way regular expressions
 		// in labeling don't have to consider satus positions.
-		normalizedStatus := "," + strings.Replace(server.Status, ", ", ",", -1) + ","
+		normalizedStatus := "," + strings.Replace(serverdata.Attributes.State, ", ", ",", -1) + ","
 
 		upMetric := m.serverMetrics["server_up"]
 		ch <- prometheus.MustNewConstMetric(
 			upMetric.Desc,
 			upMetric.ValueType,
 			serverUp(normalizedStatus),
-			server.Server, server.Address, normalizedStatus,
+			serverdata.Attributes.Name, serverdata.Attributes.Parameters.Address, normalizedStatus,
 		)
 	}
 
