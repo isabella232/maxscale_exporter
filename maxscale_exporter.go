@@ -42,11 +42,11 @@ type ServersData struct {
 }
 
 type ServerData struct {
+	ID         string `json:"id"`
 	Attributes ServerAttributes
 }
 
 type ServerAttributes struct {
-	Name       string
 	State      string
 	Parameters ServerParameters
 	Statistics ServerStatistics
@@ -61,11 +61,23 @@ type ServerStatistics struct {
 	Connections float64
 }
 
-type Service struct {
-	Name          string  `json:"Service Name"`
-	Router        string  `json:"Router Module"`
-	Sessions      float64 `json:"No. Sessions"`
-	TotalSessions float64 `json:"Total Sessions"`
+type ServicesData struct {
+	Data []ServiceData
+}
+
+type ServiceData struct {
+	ID         string `json:"id"`
+	Attributes ServiceAttributes
+}
+
+type ServiceAttributes struct {
+	Router     string
+	Statistics ServiceStatistics
+}
+
+type ServiceStatistics struct {
+	Connections      float64
+	TotalConnections float64 `json:"total_connections"`
 }
 
 type Status struct {
@@ -220,11 +232,11 @@ func (m *MaxScale) Collect(ch chan<- prometheus.Metric) {
 		log.Print(err)
 	}
 
-	// if err := m.parseServices(ch); err != nil {
-	// 	parseErrors = true
-	// 	log.Print(err)
-	// }
-	//
+	if err := m.parseServices(ch); err != nil {
+		parseErrors = true
+		log.Print(err)
+	}
+
 	// if err := m.parseStatus(ch); err != nil {
 	// 	parseErrors = true
 	// 	log.Print(err)
@@ -295,7 +307,7 @@ func (m *MaxScale) parseServers(ch chan<- prometheus.Metric) error {
 			connectionsMetric.Desc,
 			connectionsMetric.ValueType,
 			serverdata.Attributes.Statistics.Connections,
-			serverdata.Attributes.Name, serverdata.Attributes.Parameters.Address,
+			serverdata.ID, serverdata.Attributes.Parameters.Address,
 		)
 
 		// We surround the separated list with the separator as well. This way regular expressions
@@ -307,7 +319,7 @@ func (m *MaxScale) parseServers(ch chan<- prometheus.Metric) error {
 			upMetric.Desc,
 			upMetric.ValueType,
 			serverUp(normalizedStatus),
-			serverdata.Attributes.Name, serverdata.Attributes.Parameters.Address, normalizedStatus,
+			serverdata.ID, serverdata.Attributes.Parameters.Address, normalizedStatus,
 		)
 	}
 
@@ -315,28 +327,26 @@ func (m *MaxScale) parseServers(ch chan<- prometheus.Metric) error {
 }
 
 func (m *MaxScale) parseServices(ch chan<- prometheus.Metric) error {
-	var services []Service
-	err := m.getStatistics("/services", &services)
+	var services ServicesData
+	err := m.getStatistics("services", &services)
 
 	if err != nil {
 		return err
 	}
 
-	for _, service := range services {
+	for _, service := range services.Data {
 		currentSessions := m.serviceMetrics["service_current_sessions"]
 		ch <- prometheus.MustNewConstMetric(
-			currentSessions.Desc,
-			currentSessions.ValueType,
-			service.Sessions,
-			service.Name, service.Router,
+			currentSessions.Desc, currentSessions.ValueType,
+			service.Attributes.Statistics.Connections,
+			service.ID, service.Attributes.Router,
 		)
 
 		totalSessions := m.serviceMetrics["service_sessions_total"]
 		ch <- prometheus.MustNewConstMetric(
-			totalSessions.Desc,
-			totalSessions.ValueType,
-			service.TotalSessions,
-			service.Name, service.Router,
+			totalSessions.Desc, totalSessions.ValueType,
+			service.Attributes.Statistics.TotalConnections,
+			service.ID, service.Attributes.Router,
 		)
 	}
 
